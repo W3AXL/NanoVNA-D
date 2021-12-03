@@ -135,6 +135,7 @@ static float kaiser_data[FFT_SIZE];
 const char *info_about[]={
   "Board: " BOARD_NAME,
   "2019-2021 Copyright @DiSlord (based on @edy555 source)",
+  "Updates and improvements by @W3AXL",
   "Licensed under GPL.",
   "  https://github.com/DiSlord/NanoVNA-D",
   "Donate support:",
@@ -906,7 +907,7 @@ config_t config = {
   ._dac_value   = 1922,
   ._vbat_offset = 320,
   ._bandwidth = BANDWIDTH_1000,
-  ._lcd_palette = LCD_DEFAULT_PALETTE,
+  ._lcd_palette = LCD_DARK_PALETTE,
   ._serial_speed = SERIAL_DEFAULT_BITRATE,
   ._xtal_freq = XTALFREQ,
   ._measure_r = MEASURE_DEFAULT_R,
@@ -2297,8 +2298,8 @@ VNA_SHELL_FUNCTION(cmd_touchcal)
   shell_printf("done\r\n");
 
   shell_printf("touch cal params: ");
-  for (i = 0; i < 4; i++) {
-    shell_printf("%d ", config._touch_cal[i]);
+  for (i = 0; i < 6; i++) {
+    shell_printf("%.4f ", config._touch_cal[i]);
   }
   shell_printf("\r\n");
   request_to_redraw(REDRAW_CLRSCR | REDRAW_AREA | REDRAW_BATTERY | REDRAW_CAL_STATUS | REDRAW_FREQUENCY);

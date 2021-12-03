@@ -794,7 +794,7 @@ typedef struct config {
   uint32_t magic;
   uint32_t _harmonic_freq_threshold;
   int32_t  _IF_freq;
-  int16_t  _touch_cal[4];
+  double  _touch_cal[6];
   uint8_t  _vna_mode;
   uint8_t  _brightness;
   uint16_t _dac_value;
@@ -1008,6 +1008,35 @@ typedef uint16_t pixel_t;
 [LCD_SPEC_INPUT_COLOR ] = RGB565(128,255,128), \
 [LCD_RISE_EDGE_COLOR  ] = RGB565(255,255,255), \
 [LCD_FALLEN_EDGE_COLOR] = RGB565(128,128,128), \
+[LCD_SWEEP_LINE_COLOR ] = RGB565(  0,  0,255), \
+[LCD_BW_TEXT_COLOR    ] = RGB565(196,196,196), \
+[LCD_INPUT_TEXT_COLOR ] = RGB565(  0,  0,  0), \
+[LCD_INPUT_BG_COLOR   ] = RGB565(255,255,255), \
+[LCD_LC_MATCH_COLOR   ] = RGB565(255,255,255), \
+[LCD_GRID_VALUE_COLOR ] = RGB565( 96, 96, 96), \
+[LCD_INTERP_CAL_COLOR ] = RGB565( 31,227,  0), \
+[LCD_DISABLE_CAL_COLOR] = RGB565(255,  0,  0), \
+[LCD_LINK_COLOR       ] = RGB565(  0,  0,192), \
+}
+
+#define LCD_DARK_PALETTE {\
+[LCD_BG_COLOR         ] = RGB565(  0,  0,  0), \
+[LCD_FG_COLOR         ] = RGB565(255,255,255), \
+[LCD_GRID_COLOR       ] = RGB565(128,128,128), \
+[LCD_MENU_COLOR       ] = RGB565( 64, 64, 64), \
+[LCD_MENU_TEXT_COLOR  ] = RGB565(150,175,200), \
+[LCD_MENU_ACTIVE_COLOR] = RGB565(112,112,112), \
+[LCD_TRACE_1_COLOR    ] = RGB565(255,255,  0), \
+[LCD_TRACE_2_COLOR    ] = RGB565(  0,255,255), \
+[LCD_TRACE_3_COLOR    ] = RGB565(  0,255,  0), \
+[LCD_TRACE_4_COLOR    ] = RGB565(255,  0,255), \
+[LCD_TRACE_5_COLOR    ] = RGB565(255,  0,  0), \
+[LCD_TRACE_6_COLOR    ] = RGB565(  0,  0,255), \
+[LCD_NORMAL_BAT_COLOR ] = RGB565( 31,227,  0), \
+[LCD_LOW_BAT_COLOR    ] = RGB565(255,  0,  0), \
+[LCD_SPEC_INPUT_COLOR ] = RGB565(128,255,128), \
+[LCD_RISE_EDGE_COLOR  ] = RGB565( 96, 96, 96), \
+[LCD_FALLEN_EDGE_COLOR] = RGB565( 32, 32, 32), \
 [LCD_SWEEP_LINE_COLOR ] = RGB565(  0,  0,255), \
 [LCD_BW_TEXT_COLOR    ] = RGB565(196,196,196), \
 [LCD_INPUT_TEXT_COLOR ] = RGB565(  0,  0,  0), \

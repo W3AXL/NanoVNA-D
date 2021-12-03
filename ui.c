@@ -427,7 +427,7 @@ touch_wait_pressed(void)
     ;
 }
 
-#define CALIBRATION_OFFSET 16
+#define CALIBRATION_OFFSET 12
 #define TOUCH_MARK_W        9
 #define TOUCH_MARK_H        9
 #define TOUCH_MARK_X        4
@@ -449,25 +449,104 @@ static void getTouchPoint(uint16_t x, uint16_t y, const char *name) {
   lcd_set_background(LCD_BG_COLOR);
   lcd_clear_screen();
   lcd_blitBitmap(x, y, TOUCH_MARK_W, TOUCH_MARK_H, touch_bitmap);
-  lcd_printf((LCD_WIDTH-18*FONT_WIDTH)/2, (LCD_HEIGHT-FONT_GET_HEIGHT)/2, "TOUCH %s *", name);
+  lcd_printf((LCD_WIDTH-18*FONT_WIDTH)/2, (LCD_HEIGHT-18-FONT_GET_HEIGHT)/2, "TOUCH %s *", name);
   touch_wait_release();
 }
 
+/**
+ * Calibration routine using the MMSE method from Analog's AN-1021 application note
+ * https://www.analog.com/media/en/technical-documentation/application-notes/AN-1021.pdf
+ */
 void
 touch_cal_exec(void)
 {
-  const uint16_t x1 = CALIBRATION_OFFSET - TOUCH_MARK_X;
-  const uint16_t y1 = CALIBRATION_OFFSET - TOUCH_MARK_Y;
-  const uint16_t x2 = LCD_WIDTH  - 1 - CALIBRATION_OFFSET - TOUCH_MARK_X;
-  const uint16_t y2 = LCD_HEIGHT - 1 - CALIBRATION_OFFSET - TOUCH_MARK_Y;
-  getTouchPoint(x1, y1, "UPPER LEFT");
-  config._touch_cal[0] = last_touch_x;
-  config._touch_cal[1] = last_touch_y;
-  getTouchPoint(x2, y2, "LOWER RIGHT");
-  config._touch_cal[2] = last_touch_x;
-  config._touch_cal[3] = last_touch_y;
+  // Number of points for MMSE calibration
+  #define TOUCH_CAL_PTS 9
+
+  // Calibration points to probe
+  int CalPoints[9][2] = 
+  {
+    {        CALIBRATION_OFFSET - TOUCH_MARK_X          , CALIBRATION_OFFSET - TOUCH_MARK_Y }, // Top Left
+    {           LCD_WIDTH / 2 - TOUCH_MARK_X            , CALIBRATION_OFFSET - TOUCH_MARK_Y }, // Top Middle
+    { LCD_WIDTH - 1 - CALIBRATION_OFFSET - TOUCH_MARK_X , CALIBRATION_OFFSET - TOUCH_MARK_Y }, // Top Right
+    {        CALIBRATION_OFFSET - TOUCH_MARK_X          ,   LCD_HEIGHT / 2 - TOUCH_MARK_Y   }, // Middle Left
+    {           LCD_WIDTH / 2 - TOUCH_MARK_X            ,   LCD_HEIGHT / 2 - TOUCH_MARK_Y   }, // Middle Middle
+    { LCD_WIDTH - 1 - CALIBRATION_OFFSET - TOUCH_MARK_X ,   LCD_HEIGHT / 2 - TOUCH_MARK_Y   }, // Middle Right
+    {        CALIBRATION_OFFSET - TOUCH_MARK_X          , LCD_HEIGHT - 1 - CALIBRATION_OFFSET - TOUCH_MARK_Y }, // Bottom Left
+    {           LCD_WIDTH / 2 - TOUCH_MARK_X            , LCD_HEIGHT - 1 - CALIBRATION_OFFSET - TOUCH_MARK_Y }, // Bottom Middle
+    { LCD_WIDTH - 1 - CALIBRATION_OFFSET - TOUCH_MARK_X , LCD_HEIGHT - 1 - CALIBRATION_OFFSET - TOUCH_MARK_Y }, // Bottom Right
+  };
+
+  // Sampled points populated after touches
+  int SmpPoints[9][2];
+
+  // Get points
+  for (int i=0; i<TOUCH_CAL_PTS; i++) 
+  {
+    getTouchPoint(CalPoints[i][0], CalPoints[i][1], "");
+    SmpPoints[i][0] = last_touch_x;
+    SmpPoints[i][1] = last_touch_y;
+  }
+  
+  // Starting variables for algorithm
+  double a[3], b[3], c[3], d[3], k;  // variables for coefficient calculation
+
+  // Set all coefficients to zero
+  for (int i=0; i<3; i++)
+  {
+    a[i] = 0;
+    b[i] = 0;
+    c[i] = 0;
+    d[i] = 0;
+  }
+
+  // Do the summations
+  for (int i=0; i<TOUCH_CAL_PTS; i++)
+  {
+    a[2] = a[2] + (double)(SmpPoints[i][0]);
+    b[2] = b[2] + (double)(SmpPoints[i][1]);
+    c[2] = c[2] + (double)(CalPoints[i][0]);
+    d[2] = d[2] + (double)(CalPoints[i][1]);
+
+    a[0] = a[0] + (double)(SmpPoints[i][0]) * (double)(SmpPoints[i][0]);
+    a[1] = a[1] + (double)(SmpPoints[i][0]) * (double)(SmpPoints[i][1]);
+
+    b[0] = a[1];
+
+    b[1] = b[1] + (double)(SmpPoints[i][1]) * (double)(SmpPoints[i][1]);
+    c[0] = c[0] + (double)(SmpPoints[i][0]) * (double)(CalPoints[i][0]);
+    c[1] = c[1] + (double)(SmpPoints[i][1]) * (double)(CalPoints[i][0]);
+    d[0] = d[0] + (double)(SmpPoints[i][0]) * (double)(CalPoints[i][1]);
+    d[1] = c[1] + (double)(SmpPoints[i][1]) * (double)(CalPoints[i][1]);
+  }
+
+  // Calculate the final coefficients
+  a[0] = a[0] / a[2]; 
+  a[1] = a[1] / b[2]; 
+  b[0] = b[0] / a[2]; 
+  b[1] = b[1] / b[2]; 
+  c[0] = c[0] / a[2]; 
+  c[1] = c[1] / b[2]; 
+  d[0] = d[0] / a[2]; 
+  d[1] = d[1] / b[2]; 
+  a[2] = a[2] / TOUCH_CAL_PTS; 
+  b[2] = b[2] / TOUCH_CAL_PTS; 
+  c[2] = c[2] / TOUCH_CAL_PTS; 
+  d[2] = d[2] / TOUCH_CAL_PTS;
+
+  // Claculate the KX/KY values
+  k = (a[0]-a[2])*(b[1]-b[2])-(a[1]-a[2])*(b[0]-b[2]); 
+  config._touch_cal[0] = ((c[0]-c[2])*(b[1]-b[2])-(c[1]-c[2])*(b[0]-b[2]))/k; 
+  config._touch_cal[1] = ((c[1]-c[2])*(a[0]-a[2])-(c[0]-c[2])*(a[1]-a[2]))/k; 
+  config._touch_cal[2] = (b[0]*(a[2]*c[1]-a[1]*c[2])+b[1]*(a[0]*c[2]-a[2]*c[0])+b[2]*(a[1]*c[0]-a[0]*c[1]))/k; 
+  config._touch_cal[3] = ((d[0]-d[2])*(b[1]-b[2])-(d[1]-d[2])*(b[0]-b[2]))/k; 
+  config._touch_cal[4] = ((d[1]-d[2])*(a[0]-a[2])-(d[0]-d[2])*(a[1]-a[2]))/k; 
+  config._touch_cal[5] = (b[0]*(a[2]*d[1]-a[1]*d[2])+b[1]*(a[0]*d[2]-a[2]*d[0])+b[2]*(a[1]*d[0]-a[0]*d[1]))/k;
 }
 
+/**
+ * Draws a touch test point and gets the touch position
+ */
 void
 touch_draw_test(void)
 {
@@ -493,13 +572,22 @@ touch_draw_test(void)
   }
 }
 
+/**
+ *  Get a touch position using the calibration parameters calculated during MMSE touch cal
+ *  Again this is "stolen" from the Analog AN-1021 example code
+ */
 static void
 touch_position(int *x, int *y)
 {
-  int tx = ((LCD_WIDTH-1-CALIBRATION_OFFSET)*(last_touch_x - config._touch_cal[0]) + CALIBRATION_OFFSET * (config._touch_cal[2] - last_touch_x)) / (config._touch_cal[2] - config._touch_cal[0]);
-  if (tx<0) tx = 0; else if (tx>=LCD_WIDTH ) tx = LCD_WIDTH -1;
-  int ty = ((LCD_HEIGHT-1-CALIBRATION_OFFSET)*(last_touch_y - config._touch_cal[1]) + CALIBRATION_OFFSET * (config._touch_cal[3] - last_touch_y)) / (config._touch_cal[3] - config._touch_cal[1]);
-  if (ty<0) ty = 0; else if (ty>=LCD_HEIGHT) ty = LCD_HEIGHT-1;
+  // Calculate real x based on touch point
+  float tx = (int)((config._touch_cal[0] * (float)last_touch_x) + (config._touch_cal[1] * (float)last_touch_y) + config._touch_cal[2] + 0.5);
+  float ty = (int)((config._touch_cal[3] * (float)last_touch_x) + (config._touch_cal[4] * (float)last_touch_y) + config._touch_cal[5] + 0.5);
+
+  // Validate touch points
+  //if (tx < 0) tx = 0; else if (tx >= LCD_WIDTH) tx = LCD_WIDTH - 1;
+  //if (ty < 0) ty = 0; else if (ty >= LCD_HEIGHT) ty = LCD_HEIGHT - 1;
+
+  // Return the calibrated touch points
   *x = tx;
   *y = ty;
 }
@@ -1895,7 +1983,7 @@ const menuitem_t menu_config[] = {
 const menuitem_t menu_top[] = {
   { MT_SUBMENU, 0, "DISPLAY", menu_display },
   { MT_SUBMENU, 0, "MARKER", menu_marker },
-  { MT_SUBMENU, 0, "STIMULUS", menu_stimulus },
+  { MT_SUBMENU, 0, "FREQUENCY", menu_stimulus },
   { MT_SUBMENU, 0, "CALIBRATE", menu_cal },
   { MT_SUBMENU, 0, "RECALL", menu_recall },
 #ifdef __USE_SD_CARD__
