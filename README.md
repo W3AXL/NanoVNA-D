@@ -1,6 +1,7 @@
 NanoVNA - Very tiny handheld Vector Network Analyzer
 ==========================================================
-[release]: https://github.com/DiSlord/NanoVNA-D/releases
+W3AXL Improvements to Dislord's firmware
+
 
 <div align="center">
 <img src="/doc/nanovna.jpg" width="480px">
