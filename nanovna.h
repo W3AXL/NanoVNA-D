@@ -794,7 +794,7 @@ typedef struct config {
   uint32_t magic;
   uint32_t _harmonic_freq_threshold;
   int32_t  _IF_freq;
-  double  _touch_cal[6];
+  float  _touch_cal[6];
   uint8_t  _vna_mode;
   uint8_t  _brightness;
   uint16_t _dac_value;
