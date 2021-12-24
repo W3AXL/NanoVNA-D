@@ -888,6 +888,9 @@ void marker_search_dir(int16_t from, int16_t dir);
 #define REDRAW_AREA       (1<<5)
 #define REDRAW_CLRSCR     (1<<6)
 
+// Allows disabling of touchscreen altogether
+#define DISABLE_TOUCH
+
 /*
  * ili9341.c
  */

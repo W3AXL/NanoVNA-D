@@ -3168,6 +3168,7 @@ ui_process_lever(void)
 static
 void ui_process_touch(void)
 {
+  #ifndef DISABLE_TOUCH
   int touch_x, touch_y;
   int status = touch_check();
   if (status == EVT_TOUCH_PRESSED || status == EVT_TOUCH_DOWN) {
@@ -3181,6 +3182,9 @@ void ui_process_touch(void)
       case UI_KEYPAD: keypad_apply_touch(touch_x, touch_y); break;
     }
   }
+  #else
+  return;
+  #endif
 }
 
 void
