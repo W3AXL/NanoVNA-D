@@ -37,6 +37,8 @@
 #define __DFU_SOFTWARE_MODE__
 // Add RTC clock support
 #define __USE_RTC__
+// Add RTC backup registers support
+#define __USE_BACKUP__
 // Add SD card support, req enable RTC (additional settings for file system see FatFS lib ffconf.h)
 #define __USE_SD_CARD__
 // If enabled serial in halconf.h, possible enable serial console control
@@ -83,6 +85,8 @@
 #define __S21_MEASURE__
 // Enable S11 cable measure option
 #define __S11_CABLE_MEASURE__
+// Enable S11 resonance search option
+#define __S11_RESONANCE_MEASURE__
 #endif
 
 /*
@@ -247,7 +251,7 @@ void cal_done(void);
 
 #define MAX_FREQ_TYPE 5
 enum stimulus_type {
-  ST_START=0, ST_STOP, ST_CENTER, ST_SPAN, ST_CW
+  ST_START=0, ST_STOP, ST_CENTER, ST_CW, ST_SPAN, ST_VAR
 };
 
 freq_t getFrequency(uint16_t idx);
@@ -275,6 +279,11 @@ float    my_atof(const char *p);
 void toggle_sweep(void);
 void load_default_properties(void);
 int  load_properties(uint32_t id);
+
+#ifdef __USE_BACKUP__
+void update_backup_data(void);
+#endif
+
 void set_sweep_points(uint16_t points);
 
 bool sd_card_load_config(void);
@@ -406,8 +415,8 @@ void tlv320aic3204_write_reg(uint8_t page, uint8_t reg, uint8_t data);
 
 // Define maximum distance in pixel for pickup marker (can be bigger for big displays)
 #define MARKER_PICKUP_DISTANCE       20
-// Used marker size settings
-#define _USE_BIG_MARKER_              0
+// Used marker image settings
+#define _USE_MARKER_SET_              1
 // Used font settings
 #define _USE_FONT_                    1
 #define _USE_SMALL_FONT_              0
@@ -461,8 +470,8 @@ void tlv320aic3204_write_reg(uint8_t page, uint8_t reg, uint8_t data);
 
 // Define maximum distance in pixel for pickup marker (can be bigger for big displays)
 #define MARKER_PICKUP_DISTANCE       30
-// Used marker size settings
-#define _USE_BIG_MARKER_              1
+// Used marker image settings
+#define _USE_MARKER_SET_              2
 // Used font settings
 #define _USE_FONT_                    2
 #define _USE_SMALL_FONT_              2
@@ -729,11 +738,11 @@ enum {LM_MARKER, LM_SEARCH, LM_FREQ_0, LM_FREQ_1, LM_EDELAY};
 // Marker delta
 #define TD_MARKER_DELTA         (1<<8)
 // Marker delta
-#define TD_MARKER_LOCK          (1<<9)
+//#define TD_MARKER_LOCK          (1<<9) // reserved
 
 // config._mode flags
 // Made x4 average on calibration data
-#define VNA_AVG_CALIBRATION       0x01
+//#define VNA_AVG_CALIBRATION       0x01 // reserved
 // Smooth function
 #define VNA_SMOOTH_FUNCTION       0x02
 // Connection flag
@@ -741,13 +750,14 @@ enum {LM_MARKER, LM_SEARCH, LM_FREQ_0, LM_FREQ_1, LM_EDELAY};
 #define VNA_MODE_SERIAL           0x04
 #define VNA_MODE_USB              0x00
 // Marker search mode
-#define VNA_MODE_SEARCH_MASK      0x08
 #define VNA_MODE_SEARCH_MIN       0x08
 #define VNA_MODE_SEARCH_MAX       0x00
 // Show grid values
 #define VNA_MODE_SHOW_GRID        0x10
 // Show grid values
 #define VNA_MODE_DOT_GRID         0x20
+// Made backup settings (save some settings after power off)
+#define VNA_MODE_BACKUP           0x40
 
 #ifdef __VNA_MEASURE_MODULE__
 // Measure option mode
@@ -763,6 +773,9 @@ enum {
 #endif
 #ifdef __S11_CABLE_MEASURE__
   MEASURE_S11_CABLE,
+#endif
+#ifdef __S11_RESONANCE_MEASURE__
+  MEASURE_S11_RESONANCE,
 #endif
   MEASURE_END
 };
@@ -887,6 +900,7 @@ void marker_search_dir(int16_t from, int16_t dir);
 #define REDRAW_BATTERY    (1<<4)
 #define REDRAW_AREA       (1<<5)
 #define REDRAW_CLRSCR     (1<<6)
+#define REDRAW_BACKUP     (1<<7)
 
 // Allows disabling of touchscreen altogether
 #define DISABLE_TOUCH
