@@ -2360,9 +2360,15 @@ VNA_SHELL_FUNCTION(cmd_touchcal)
   touch_cal_exec();
   shell_printf("done\r\n");
 
+<<<<<<< HEAD
   shell_printf("touch cal params: ");
   for (i = 0; i < 6; i++) {
     shell_printf("%.4f ", config._touch_cal[i]);
+=======
+  shell_printf("touch cal params:");
+  for (i = 0; i < 4; i++) {
+    shell_printf(" %d", config._touch_cal[i]);
+>>>>>>> 79b01049bbeb0cf476f064174c6d751a3173a33e
   }
   shell_printf("\r\n");
   request_to_redraw(REDRAW_CLRSCR | REDRAW_AREA | REDRAW_BATTERY | REDRAW_CAL_STATUS | REDRAW_FREQUENCY);
