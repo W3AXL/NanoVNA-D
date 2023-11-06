@@ -38,11 +38,9 @@
  */
 #define STM32F303xC
 
-#define STM32F303xC_SYSTEM_MEMORY 0x1FFFD800
-#define BOOT_FROM_SYTEM_MEMORY_MAGIC_ADDRESS 0x20009FF0
-#define BOOT_FROM_SYTEM_MEMORY_MAGIC 0xDEADBEEF
-//#define SYSTEM_BOOT_MSP *(uint32_t *)0  // 0x20001258
-#define SYSTEM_BOOT_MSP 0x20001258
+#define STM32F303xC_SYSTEM_MEMORY            0x1FFFD800
+#define BOOT_FROM_SYTEM_MEMORY_MAGIC_ADDRESS 0x20009FFC
+#define BOOT_FROM_SYTEM_MEMORY_MAGIC         0xDEADBEEF
 
 /*
  * IO pins assignments
@@ -52,8 +50,8 @@
 
 #define GPIOA_BUTTON			0
 #define GPIOA_LEVER1			1
-#define GPIOA_LEVER2			2
-#define GPIOA_PUSH				3
+#define GPIOA_PUSH				2
+#define GPIOA_LEVER2			3
 #define GPIOA_VBUS			    4
 #define GPIOA_DAC2				5
 #define GPIOA_XP				6
@@ -281,8 +279,8 @@
                                      PIN_OTYPE_PUSHPULL(GPIOB_I2S2_BCLK)| \
                                      PIN_OTYPE_PUSHPULL(GPIOB_I2S2_MISO)| \
                                      PIN_OTYPE_PUSHPULL(GPIOB_I2S2_MOSI))
-#define VAL_GPIOB_OSPEEDR           (PIN_OSPEED_100M(GPIOB_XN)       | \
-                                     PIN_OSPEED_100M(GPIOB_YN)       | \
+#define VAL_GPIOB_OSPEEDR           (PIN_OSPEED_2M(GPIOB_XN)         | \
+                                     PIN_OSPEED_2M(GPIOB_YN)         | \
                                      PIN_OSPEED_100M(2)              | \
                                      PIN_OSPEED_100M(GPIOB_SPI_SCLK) | \
                                      PIN_OSPEED_100M(GPIOB_SPI_MISO) | \
@@ -297,8 +295,8 @@
                                      PIN_OSPEED_100M(GPIOB_I2S2_BCLK)| \
                                      PIN_OSPEED_100M(GPIOB_I2S2_MISO)| \
                                      PIN_OSPEED_100M(GPIOB_I2S2_MOSI))
-#define VAL_GPIOB_PUPDR             (PIN_PUPDR_PULLUP(GPIOB_XN)       | \
-                                     PIN_PUPDR_PULLUP(GPIOB_YN)       | \
+#define VAL_GPIOB_PUPDR             (PIN_PUPDR_FLOATING(GPIOB_XN)     | \
+                                     PIN_PUPDR_FLOATING(GPIOB_YN)     | \
                                      PIN_PUPDR_PULLUP(2)              | \
                                      PIN_PUPDR_PULLUP(GPIOB_SPI_SCLK) | \
                                      PIN_PUPDR_PULLUP(GPIOB_SPI_MISO) | \
@@ -794,6 +792,7 @@
 extern "C" {
 #endif
   void boardInit(void);
+  void boardDFUEnter(void);
 #ifdef __cplusplus
 }
 #endif

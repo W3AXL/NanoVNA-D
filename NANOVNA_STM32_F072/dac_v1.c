@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2020, Dmitry (DiSlord) dislordlive@gmail.com
+ * Copyright (c) 2019-2021, Dmitry (DiSlord) dislordlive@gmail.com
  * Based on TAKAHASHI Tomohiro (TTRFTECH) edy555@gmail.com
  * All rights reserved.
  *
@@ -18,19 +18,11 @@
  * the Free Software Foundation, Inc., 51 Franklin Street,
  * Boston, MA 02110-1301, USA.
  */
-#include "ch.h"
-#include "hal.h"
-#include "nanovna.h"
 
-#ifndef VNA_ADC_H
-#define VNA_ADC_H
+void dac_init(void) {
+  rccEnableDAC1(false); // Use DAC1
+  DAC->CR|= DAC_CR_EN2; // Enable DAC1 ch2
+}
 
-// Measure vbat every 5 second
-#define VBAT_MEASURE_INTERVAL   S2ST(5)
-
-#ifdef NANOVNA_F303
-#include "NANOVNA_STM32_F303/adc.c"
-#else
-#include "NANOVNA_STM32_F072/adc.c"
-#endif
-#endif
+void dac_setvalue_ch1(uint16_t v) {DAC->DHR12R1 = v;}
+void dac_setvalue_ch2(uint16_t v) {DAC->DHR12R2 = v;}

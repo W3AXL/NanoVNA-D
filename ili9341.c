@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2020, Dmitry (DiSlord) dislordlive@gmail.com
+ * Copyright (c) 2019-2023, Dmitry (DiSlord) dislordlive@gmail.com
  * Based on TAKAHASHI Tomohiro (TTRFTECH) edy555@gmail.com
  * All rights reserved.
  *
@@ -34,6 +34,11 @@
 
 // SPI bus for LCD
 #define LCD_SPI           SPI1
+#ifdef __USE_DISPLAY_DMA__
+// DMA channels for used in LCD SPI bus
+#define LCD_DMA_RX        DMA1_Channel2    // DMA1 channel 2 use for SPI1 rx
+#define LCD_DMA_TX        DMA1_Channel3    // DMA1 channel 3 use for SPI1 tx
+#endif
 
 // Custom display definition
 #ifdef LCD_DRIVER_ILI9341
@@ -68,29 +73,23 @@ pixel_t background_color = 0;
 //*****************************************************
 // SPI functions, settings and data
 //*****************************************************
-// SPI transmit byte to SPI (no wait complete transmit)
-inline void spi_TxByte(uint8_t data) {
+void spi_TxByte(const uint8_t data) {
+  while (SPI_TX_IS_NOT_EMPTY(LCD_SPI));
   SPI_WRITE_8BIT(LCD_SPI, data);
 }
-
-// Transmit word to SPI bus (if SPI in 8 bit mode LSB send first!!!!!)
-inline void spi_TxWord(uint16_t data) {
-  SPI_WRITE_16BIT(LCD_SPI, data);
-}
-
 // Transmit buffer to SPI bus  (len should be > 0)
 void spi_TxBuffer(const uint8_t *buffer, uint16_t len) {
-  do {
+  while(len--) {
     while (SPI_TX_IS_NOT_EMPTY(LCD_SPI));
     SPI_WRITE_8BIT(LCD_SPI, *buffer++);
-  }while(--len);
+  }
 }
 
 // Receive byte from SPI bus
-static uint8_t spi_RxByte(void) {
+uint8_t spi_RxByte(void) {
   // Start RX clock (by sending data)
   SPI_WRITE_8BIT(LCD_SPI, 0xFF);
-  while (SPI_RX_IS_EMPTY(LCD_SPI)||SPI_IS_BUSY(LCD_SPI));
+  while (SPI_RX_IS_EMPTY(LCD_SPI));
   return SPI_READ_8BIT(LCD_SPI);
 }
 
@@ -103,102 +102,69 @@ void spi_RxBuffer(uint8_t *buffer, uint16_t len) {
   }while(--len);
 }
 
-void spi_DropRx(void){
+void spi_DropRx(void) {
   // Drop Rx buffer after tx and wait tx complete
+#if 1
   while (SPI_RX_IS_NOT_EMPTY(LCD_SPI)||SPI_IS_BUSY(LCD_SPI))
     (void)SPI_READ_8BIT(LCD_SPI);
   (void)SPI_READ_8BIT(LCD_SPI);
+#else
+  while(SPI_IS_BUSY(LCD_SPI));
+  (void)SPI_READ_16BIT(LCD_SPI);
+  (void)SPI_READ_16BIT(LCD_SPI);
+#endif
 }
 
 //*****************************************************
 // SPI DMA settings and data
 //*****************************************************
 #ifdef __USE_DISPLAY_DMA__
-static const stm32_dma_stream_t *dmatx =
-    STM32_DMA_STREAM(STM32_SPI_SPI1_TX_DMA_STREAM);
-static const uint32_t txdmamode =
-    STM32_DMA_CR_CHSEL(SPI1_TX_DMA_CHANNEL)         // Select SPI1 Tx DMA
+static const uint32_t txdmamode = 0
     | STM32_DMA_CR_PL(STM32_SPI_SPI1_DMA_PRIORITY)  // Set priority
     | STM32_DMA_CR_DIR_M2P;                         // Memory to Spi
 
-// Not handle interrupt
-#if 0
-static void spi_lld_serve_tx_interrupt(SPIDriver *spip, uint32_t flags)
-{
-  (void)spip;
-  (void)flags;
-}
-#endif
-
-static const stm32_dma_stream_t  *dmarx = STM32_DMA_STREAM(STM32_SPI_SPI1_RX_DMA_STREAM);
-static const uint32_t rxdmamode =
-    STM32_DMA_CR_CHSEL(SPI1_RX_DMA_CHANNEL)         // Select SPI1 Rx DMA
+static const uint32_t rxdmamode = 0
     | STM32_DMA_CR_PL(STM32_SPI_SPI1_DMA_PRIORITY)  // Set priority
     | STM32_DMA_CR_DIR_P2M;                         // SPI to Memory
 
-// Not handle interrupt
-#if 0
-static void spi_lld_serve_rx_interrupt(SPIDriver *spip, uint32_t flags)
-{
-  (void)spip;
-  (void)flags;
-}
-#endif
-
-// Send prepared DMA data, and wait completion
-static void dmaStreamFlush(uint32_t len)
-{
-  while (len) {
-    // DMA data transfer limited by 65535
-    uint16_t tx_size = len > 65535 ? 65535 : len;
-    dmaStreamSetTransactionSize(dmatx, tx_size);
-    dmaStreamEnable(dmatx);
-    len -= tx_size;
-    dmaWaitCompletion(dmatx);
-  }
-}
-
-// SPI receive byte buffer use DMA
-void spi_DMATxBuffer(uint8_t *buffer, uint16_t len) {
-  dmaStreamSetMemory0(dmatx, buffer);
-  dmaStreamSetMode(dmatx, txdmamode | STM32_DMA_CR_PSIZE_BYTE | STM32_DMA_CR_MSIZE_BYTE | STM32_DMA_CR_MINC);
-  dmaStreamFlush(len);
+// SPI transmit byte buffer use DMA (65535 bytes limit)
+static inline void spi_DMATxBuffer(const uint8_t *buffer, uint16_t len, bool wait) {
+  dmaChannelSetMemory(LCD_DMA_TX, buffer);
+  dmaChannelSetTransactionSize(LCD_DMA_TX, len);
+  dmaChannelSetMode(LCD_DMA_TX, txdmamode | STM32_DMA_CR_BYTE | STM32_DMA_CR_MINC | STM32_DMA_CR_EN);
+  if (wait)
+    dmaChannelWaitCompletion(LCD_DMA_TX);
 }
 
 // Wait DMA Rx completion
-static void dmaWaitCompletionRxTx(void){
-  dmaWaitCompletion(dmatx);
-  dmaWaitCompletion(dmarx);
+static void dmaChannelWaitCompletionRxTx(void) {
+  dmaChannelWaitCompletion(LCD_DMA_TX);
+  dmaChannelWaitCompletion(LCD_DMA_RX);
+//  while (SPI_IS_BUSY(LCD_SPI));   // Wait SPI tx/rx
 }
 
-// SPI transmit byte buffer use DMA
-static void spi_DMARxBuffer(uint8_t *buffer, uint16_t len, bool wait) {
-  uint8_t dummy_tx = 0xFF;
-  // Init Rx DMA buffer, size, mode (spi and mem data size is 8 bit)
-  dmaStreamSetMemory0(dmarx, buffer);
-  dmaStreamSetTransactionSize(dmarx, len);
-  dmaStreamSetMode(dmarx, rxdmamode | STM32_DMA_CR_PSIZE_BYTE | STM32_DMA_CR_MSIZE_BYTE | STM32_DMA_CR_MINC);
-  // Init dummy Tx DMA (for rx clock), size, mode (spi and mem data size is 8 bit)
-  dmaStreamSetMemory0(dmatx, &dummy_tx);
-  dmaStreamSetTransactionSize(dmatx, len);
-  dmaStreamSetMode(dmatx, txdmamode | STM32_DMA_CR_PSIZE_BYTE | STM32_DMA_CR_MSIZE_BYTE);
-  // Skip SPI rx buffer
-  spi_DropRx();
-  // Start DMA exchange
-  dmaStreamEnable(dmarx);
-  dmaStreamEnable(dmatx);
+// SPI receive byte buffer use DMA
+static const uint16_t dummy_tx = 0xFFFF;
+static inline void spi_DMARxBuffer(uint8_t *buffer, uint16_t len, bool wait) {
+  // Init Rx DMA buffer, size, mode (spi and mem data size is 8 bit), and start
+  dmaChannelSetMemory(LCD_DMA_RX, buffer);
+  dmaChannelSetTransactionSize(LCD_DMA_RX, len);
+  dmaChannelSetMode(LCD_DMA_RX, rxdmamode | STM32_DMA_CR_BYTE | STM32_DMA_CR_MINC | STM32_DMA_CR_EN);
+  // Init dummy Tx DMA (for rx clock), size, mode (spi and mem data size is 8 bit), and start
+  dmaChannelSetMemory(LCD_DMA_TX, &dummy_tx);
+  dmaChannelSetTransactionSize(LCD_DMA_TX, len);
+  dmaChannelSetMode(LCD_DMA_TX, txdmamode | STM32_DMA_CR_BYTE | STM32_DMA_CR_EN);
   if (wait)
-    dmaWaitCompletionRxTx();
+    dmaChannelWaitCompletionRxTx();
 }
 #else
 // Replace DMA function vs no DMA
-#define dmaWaitCompletionRxTx() {}
+#define dmaChannelWaitCompletionRxTx() {}
 #define spi_DMATxBuffer(buffer, len) spi_TxBuffer(buffer, len)
-#define spi_DMARxBuffer(buffer, len, wait) spi_RxBuffer(buffer, len)
+#define spi_DMARxBuffer(buffer, len) spi_RxBuffer(buffer, len)
 #endif // __USE_DISPLAY_DMA__
 
-static void spi_init(void)
-{
+static void spi_init(void) {
   rccEnableSPI1(FALSE);
   LCD_SPI->CR1 = 0;
   LCD_SPI->CR1 = SPI_CR1_MSTR      // SPI is MASTER
@@ -207,25 +173,25 @@ static void spi_init(void)
                | LCD_SPI_SPEED     // Baud rate control
                | SPI_CR1_CPHA      // Clock Phase
                | SPI_CR1_CPOL      // Clock Polarity
-                 ;
-
+               ;
   LCD_SPI->CR2 = SPI_CR2_8BIT      // SPI data size, set to 8 bit
-               | SPI_CR2_FRXTH;    // SPI_SR_RXNE generated every 8 bit data
-//             | SPI_CR2_SSOE;     //
-
+               | SPI_CR2_FRXTH     // SPI_SR_RXNE generated every 8 bit data
+//             | SPI_CR2_SSOE      //
 #ifdef __USE_DISPLAY_DMA__
-  // Tx DMA init
-  dmaStreamAllocate(dmatx, STM32_SPI_SPI1_IRQ_PRIORITY, NULL, NULL);
-  dmaStreamSetPeripheral(dmatx, &LCD_SPI->DR);
-  LCD_SPI->CR2|= SPI_CR2_TXDMAEN;    // Tx DMA enable
+               | SPI_CR2_TXDMAEN   // Tx DMA enable
 #ifdef __USE_DISPLAY_DMA_RX__
-  // Rx DMA init
-  dmaStreamAllocate(dmarx, STM32_SPI_SPI1_IRQ_PRIORITY, NULL, NULL);
-  dmaStreamSetPeripheral(dmarx, &LCD_SPI->DR);
+               | SPI_CR2_RXDMAEN   // Rx DMA enable
+#endif
+#endif
+               ;
+// Init SPI DMA Peripheral
+#ifdef __USE_DISPLAY_DMA__
+  dmaChannelSetPeripheral(LCD_DMA_TX, &LCD_SPI->DR); // DMA Peripheral Tx
+#ifdef __USE_DISPLAY_DMA_RX__
+  dmaChannelSetPeripheral(LCD_DMA_RX, &LCD_SPI->DR); // DMA Peripheral Rx
+#endif
+#endif
   // Enable DMA on SPI
-  LCD_SPI->CR2|= SPI_CR2_RXDMAEN;   // Rx DMA enable
-#endif
-#endif
   LCD_SPI->CR1|= SPI_CR1_SPE;       //SPI enable
 }
 
@@ -335,32 +301,22 @@ static void spi_init(void)
                               | ILI9341_MADCTL_MV | ILI9341_MADCTL_BGR)
 
 // Disable inline for this function
-static void ili9341_send_command(uint8_t cmd, uint8_t len, const uint8_t *data)
-{
+static void ili9341_send_command(uint8_t cmd, uint16_t len, const uint8_t *data) {
 // Uncomment on low speed SPI (possible get here before previous tx complete)
-//  while (SPI_IN_TX_RX(LCD_SPI))
-//    ;
+  while (SPI_IS_BUSY(LCD_SPI));
   LCD_CS_LOW;
   LCD_DC_CMD;
   SPI_WRITE_8BIT(LCD_SPI, cmd);
   // Need wait transfer complete and set data bit
-  while (SPI_IN_TX_RX(LCD_SPI))
-    ;
-  // Send command data (if need)
+  while (SPI_IS_BUSY(LCD_SPI));
   LCD_DC_DATA;
-  while (len-- > 0) {
-    while (SPI_TX_IS_NOT_EMPTY(LCD_SPI))
-      ;
-    SPI_WRITE_8BIT(LCD_SPI, *data++);
-  }
-//  while (SPI_IN_TX_RX(LCD_SPI))
-//    ;
+  spi_TxBuffer(data, len);
+//  while (SPI_IN_TX_RX(LCD_SPI));
   //LCD_CS_HIGH;
 }
 
 // Disable inline for this function
-uint32_t lcd_send_command(uint8_t cmd, uint8_t len, const uint8_t *data)
-{
+uint32_t lcd_send_command(uint8_t cmd, uint8_t len, const uint8_t *data) {
   lcd_bulk_finish();
   // Set read speed (if need different)
   SPI_BR_SET(LCD_SPI, SPI_BR_DIV256);
@@ -369,8 +325,8 @@ uint32_t lcd_send_command(uint8_t cmd, uint8_t len, const uint8_t *data)
 
   // Skip data from rx buffer
   spi_DropRx();
-  uint32_t ret = 0;
-  ret|= spi_RxByte();ret<<=8;
+  uint32_t ret;
+  ret = spi_RxByte();ret<<=8;
   ret|= spi_RxByte();ret<<=8;
   ret|= spi_RxByte();ret<<=8;
   ret|= spi_RxByte();
@@ -487,30 +443,8 @@ static const uint8_t ST7796S_init_seq[] = {
 #define LCD_INIT ST7796S_init_seq
 #endif
 
-#ifdef __LCD_BRIGHTNESS__
-#if HAL_USE_DAC == TRUE
-#error "Need disable HAL_USE_DAC in halconf.h for use __LCD_BRIGHTNESS__"
-#endif
-static void lcd_initBrightness(void){
-  rccEnableDAC1(false); // Enable DAC1
-  DAC->CR|= DAC_CR_EN2; // Use DAC1 CH2
-}
-// Brightness control range 0 - 100
-void lcd_setBrightness(uint16_t b){
-  uint32_t v = 700 + b*(4000-700)/100;
-  DAC->DHR12R2 = v;
-}
-#else
-#define lcd_initBrightness()
-#endif
-
-void lcd_init(void)
-{
+void lcd_init(void) {
   spi_init();
-  // Init Brightness if LCD support
-  lcd_initBrightness();
-
-  LCD_DC_DATA;
   LCD_RESET_ASSERT;
   chThdSleepMilliseconds(10);
   LCD_RESET_NEGATE;
@@ -523,22 +457,21 @@ void lcd_init(void)
   lcd_clear_screen();
 }
 
-static void ili9341_setWindow(int x, int y, int w, int h){
+static void ili9341_setWindow(int x, int y, int w, int h, uint16_t cmd) {
 // Any LCD exchange start from this
-  dmaWaitCompletionRxTx();
+  dmaChannelWaitCompletionRxTx();
 //uint8_t xx[4] = { x >> 8, x, (x+w-1) >> 8, (x+w-1) };
 //uint8_t yy[4] = { y >> 8, y, (y+h-1) >> 8, (y+h-1) };
   uint32_t xx = __REV16(x | ((x + w - 1) << 16));
   uint32_t yy = __REV16(y | ((y + h - 1) << 16));
   ili9341_send_command(ILI9341_COLUMN_ADDRESS_SET, 4, (uint8_t *)&xx);
   ili9341_send_command(ILI9341_PAGE_ADDRESS_SET, 4, (uint8_t *)&yy);
+  ili9341_send_command(cmd, 0, NULL);
 }
 
 #ifndef __USE_DISPLAY_DMA__
-void lcd_fill(int x, int y, int w, int h)
-{
-  ili9341_setWindow(x, y, w, h);
-  ili9341_send_command(ILI9341_MEMORY_WRITE, 0, NULL);
+void lcd_fill(int x, int y, int w, int h) {
+  ili9341_setWindow(x, y, w, h, ILI9341_MEMORY_WRITE);
   uint32_t len = w * h;
   do {
     while (SPI_TX_IS_NOT_EMPTY(LCD_SPI))
@@ -549,46 +482,67 @@ void lcd_fill(int x, int y, int w, int h)
     SPI_WRITE_8BIT(LCD_SPI, background_color);
 #endif
   }while(--len);
+#ifdef __REMOTE_DESKTOP__
+  if (sweep_mode & SWEEP_REMOTE) {
+    remote_region_t rd = {"fill\r\n", x, y, w, h};
+    send_region(&rd, (uint8_t *)&background_color, sizeof(pixel_t));
+  }
+#endif
 }
 
-void lcd_bulk(int x, int y, int w, int h)
-{
-  ili9341_setWindow(x, y, w, h);
-  ili9341_send_command(ILI9341_MEMORY_WRITE, 0, NULL);
+void lcd_bulk(int x, int y, int w, int h) {
+  ili9341_setWindow(x, y, w, h, ILI9341_MEMORY_WRITE);
   spi_TxBuffer((uint8_t *)spi_buffer, w * h * sizeof(pixel_t));
+#ifdef __REMOTE_DESKTOP__
+  if (sweep_mode & SWEEP_REMOTE) {
+    remote_region_t rd = {"bulk\r\n", x, y, w, h};
+    send_region(&rd, (uint8_t *)spi_buffer, w * h * sizeof(pixel_t));
+  }
+#endif
 }
 
 #else
 //
 // Use DMA for send data
 //
-#define LCD_DMA_MODE (LCD_PIXEL_SIZE == 2 ? (STM32_DMA_CR_PSIZE_HWORD|STM32_DMA_CR_MSIZE_HWORD) : (STM32_DMA_CR_PSIZE_BYTE|STM32_DMA_CR_MSIZE_BYTE))
-
+#define LCD_DMA_MODE (LCD_PIXEL_SIZE == 2 ? STM32_DMA_CR_HWORD : STM32_DMA_CR_BYTE)
 // Fill region by some color
-void lcd_fill(int x, int y, int w, int h)
-{
-  ili9341_setWindow(x, y, w, h);
-  ili9341_send_command(ILI9341_MEMORY_WRITE, 0, NULL);
-  dmaStreamSetMemory0(dmatx, &background_color);
-  dmaStreamSetMode(dmatx, txdmamode | LCD_DMA_MODE);
-  dmaStreamFlush(w * h);
+void lcd_fill(int x, int y, int w, int h) {
+  ili9341_setWindow(x, y, w, h, ILI9341_MEMORY_WRITE);
+  dmaChannelSetMemory(LCD_DMA_TX, &background_color);
+  uint32_t len = w * h, delta;
+  while(len) {
+    delta = len > 0xFFFF ? 0xFFFF : len; // DMA can send only 65535 data in one run
+    dmaChannelSetTransactionSize(LCD_DMA_TX, delta);
+    dmaChannelSetMode(LCD_DMA_TX, txdmamode | LCD_DMA_MODE | STM32_DMA_CR_EN);
+    dmaChannelWaitCompletion(LCD_DMA_TX);
+    len-=delta;
+  }
+#ifdef __REMOTE_DESKTOP__
+  if (sweep_mode & SWEEP_REMOTE) {
+    remote_region_t rd = {"fill\r\n", x, y, w, h};
+    send_region(&rd, (uint8_t *)&background_color, sizeof(pixel_t));
+  }
+#endif
 }
 
-static void ili9341_DMA_bulk(int x, int y, int w, int h, pixel_t *buffer){
-  ili9341_setWindow(x, y, w, h);
-  ili9341_send_command(ILI9341_MEMORY_WRITE, 0, NULL);
-
-  dmaStreamSetMemory0(dmatx, buffer);
-  dmaStreamSetMode(dmatx, txdmamode | LCD_DMA_MODE | STM32_DMA_CR_MINC);
-  dmaStreamSetTransactionSize(dmatx, w * h);
-  dmaStreamEnable(dmatx);
+static void ili9341_DMA_bulk(int x, int y, int w, int h, pixel_t *buffer) {
+  ili9341_setWindow(x, y, w, h, ILI9341_MEMORY_WRITE);
+  dmaChannelSetMemory(LCD_DMA_TX, buffer);
+  dmaChannelSetTransactionSize(LCD_DMA_TX, w * h);
+  dmaChannelSetMode(LCD_DMA_TX, txdmamode | LCD_DMA_MODE | STM32_DMA_CR_MINC | STM32_DMA_CR_EN);
+#ifdef __REMOTE_DESKTOP__
+  if (sweep_mode & SWEEP_REMOTE) {
+    remote_region_t rd = {"bulk\r\n", x, y, w, h};
+    send_region(&rd, (uint8_t *)buffer, w * h * sizeof(pixel_t));
+  }
+#endif
 }
 
 // Copy spi_buffer to region, wait completion after
-void lcd_bulk(int x, int y, int w, int h)
-{
+void lcd_bulk(int x, int y, int w, int h) {
   ili9341_DMA_bulk(x, y, w, h, spi_buffer);  // Send data
-  dmaWaitCompletion(dmatx);                  // Wait
+  dmaChannelWaitCompletion(LCD_DMA_TX);      // Wait
 }
 
 // Used only in double buffer mode
@@ -597,26 +551,25 @@ void lcd_bulk(int x, int y, int w, int h)
 #define LCD_DMA_RUN     0x02
 static uint8_t LCD_dma_status = 0;
 // Return free buffer for render
-pixel_t *lcd_get_cell_buffer(void){
+pixel_t *lcd_get_cell_buffer(void) {
   return &spi_buffer[(LCD_dma_status&LCD_BUFFER_1) ? SPI_BUFFER_SIZE/2 : 0];
 }
 #endif
 
 // Wait completion before next data send
 #ifndef lcd_bulk_finish
-void lcd_bulk_finish(void){
-  dmaWaitCompletion(dmatx);        // Wait DMA
-//while (SPI_IN_TX_RX(LCD_SPI));   // Wait tx
+void lcd_bulk_finish(void) {
+  dmaChannelWaitCompletion(LCD_DMA_TX);  // Wait DMA
+//while (SPI_IN_TX_RX(LCD_SPI));         // Wait tx
 }
 #endif
 
 // Copy part of spi_buffer to region, no wait completion after if buffer count !=1
 #ifndef lcd_bulk_continue
-void lcd_bulk_continue(int x, int y, int w, int h)
-{
+void lcd_bulk_continue(int x, int y, int w, int h) {
   lcd_bulk_finish();                                   // Wait DMA
   ili9341_DMA_bulk(x, y, w, h, lcd_get_cell_buffer()); // Send new cell data
-  LCD_dma_status^=LCD_BUFFER_1;                            // Switch buffer
+  LCD_dma_status^=LCD_BUFFER_1;                        // Switch buffer
 }
 #endif
 #endif
@@ -624,11 +577,9 @@ void lcd_bulk_continue(int x, int y, int w, int h)
 #ifdef LCD_DRIVER_ILI9341
 // ILI9341 send data in RGB888 format, need parse it
 // Copy ILI9341 screen data to buffer
-void lcd_read_memory(int x, int y, int w, int h, uint16_t *out)
-{
+void lcd_read_memory(int x, int y, int w, int h, uint16_t *out) {
   uint16_t len = w * h;
-  ili9341_setWindow(x, y, w, h);
-  ili9341_send_command(ILI9341_MEMORY_READ, 0, NULL);
+  ili9341_setWindow(x, y, w, h, ILI9341_MEMORY_READ);
   // Skip data from rx buffer
   spi_DropRx();
   // Set read speed (if need different)
@@ -653,13 +604,13 @@ void lcd_read_memory(int x, int y, int w, int h, uint16_t *out)
   }while(--len);
 #else
   // Set data size for DMA read
-  len*=LCD_RX_PIXEL_SIZE;
+  len*= LCD_RX_PIXEL_SIZE;
   // Start DMA read, and not wait completion
   spi_DMARxBuffer((uint8_t *)out, len, false);
   // Parse received data to RGB565 format while data receive by DMA
   uint8_t *rgbbuf = (uint8_t *)out;
   do {
-    uint16_t left = dmaStreamGetTransactionSize(dmarx)+LCD_RX_PIXEL_SIZE; // Get DMA data left
+    uint16_t left = dmaChannelGetTransactionSize(LCD_DMA_RX)+LCD_RX_PIXEL_SIZE; // Get DMA data left
     if (left > len) continue;     // Next pixel RGB data not ready
     do {                          // Process completed by DMA data
       uint8_t r = rgbbuf[0];      // read data is always 18bit in RGB888 format
@@ -670,7 +621,7 @@ void lcd_read_memory(int x, int y, int w, int h, uint16_t *out)
       len   -= LCD_RX_PIXEL_SIZE;
     } while (left < len);
   } while(len);
-  dmaWaitCompletionRxTx(); // Wait DMA completion and stop it
+  dmaChannelWaitCompletionRxTx(); // Wait DMA completion and stop it
 #endif
   // restore speed if need
 #ifdef LCD_SPI_RX_SPEED
@@ -683,11 +634,9 @@ void lcd_read_memory(int x, int y, int w, int h, uint16_t *out)
 #ifdef LCD_DRIVER_ST7796S
 // ST7796S send data in RGB565 format, not need parse it
 // Copy ST7796S screen data to buffer
-void lcd_read_memory(int x, int y, int w, int h, uint16_t *out)
-{
+void lcd_read_memory(int x, int y, int w, int h, uint16_t *out) {
   uint16_t len = w * h;
-  ili9341_setWindow(x, y, w, h);
-  ili9341_send_command(ILI9341_MEMORY_READ, 0, NULL);
+  ili9341_setWindow(x, y, w, h, ILI9341_MEMORY_READ);
   // Skip data from rx buffer
   spi_DropRx();
   // Set read speed (if need different)
@@ -710,30 +659,66 @@ void lcd_read_memory(int x, int y, int w, int h, uint16_t *out)
 }
 #endif
 
-void lcd_clear_screen(void)
-{
+#if 0
+static void lcd_pixel(int x, int y, uint16_t color) {
+  ili9341_setWindow(x0, y0, 1, 1, ILI9341_MEMORY_WRITE);
+  while (SPI_TX_IS_NOT_EMPTY(LCD_SPI));
+  SPI_WRITE_16BIT(LCD_SPI, color);
+}
+#endif
+
+void lcd_line(int x0, int y0, int x1, int y1) {
+  // Modified Bresenham's line algorithm
+  if (x1 < x0) { SWAP(int, x0, x1); SWAP(int, y0, y1); }      // Need draw from left to right
+  int dx =-(x1 - x0), sx = 1;
+  int dy = (y1 - y0), sy = 1; if (dy < 0) {dy = -dy; sy = -1;}
+  int err = -((dx + dy) < 0 ? dx : dy) / 2;
+  while (1) {
+    ili9341_setWindow(x0, y0, LCD_WIDTH-x0, 1, ILI9341_MEMORY_WRITE); // prepare send Horizontal line
+    while (1) {
+      while (SPI_TX_IS_NOT_EMPTY(LCD_SPI));
+      SPI_WRITE_16BIT(LCD_SPI, foreground_color);             // Send color
+      if (x0 == x1 && y0 == y1)
+        return;
+      int e2 = err;
+      if (e2 > dx) { err-= dy; x0+= sx; }
+      if (e2 < dy) { err-= dx; y0+= sy; break;}               // Y coordinate change, next horizontal line
+    }
+  }
+}
+
+void lcd_clear_screen(void) {
   lcd_fill(0, 0, LCD_WIDTH, LCD_HEIGHT);
 }
 
-void lcd_set_foreground(uint16_t fg_idx)
-{
+
+void lcd_set_foreground(uint16_t fg_idx) {
   foreground_color = GET_PALTETTE_COLOR(fg_idx);
 }
 
-void lcd_set_background(uint16_t bg_idx)
-{
+void lcd_set_background(uint16_t bg_idx) {
   background_color = GET_PALTETTE_COLOR(bg_idx);
 }
 
-void ili9341_set_rotation(uint8_t r)
-{
+void lcd_set_colors(uint16_t fg_idx, uint16_t bg_idx) {
+  foreground_color = GET_PALTETTE_COLOR(fg_idx);
+  background_color = GET_PALTETTE_COLOR(bg_idx);
+}
+
+void lcd_set_flip(bool flip) {
+  dmaChannelWaitCompletionRxTx();
+  uint8_t memAcc = flip ? DISPLAY_ROTATION_180 : DISPLAY_ROTATION_0;
+  lcd_send_command(ILI9341_MEMORY_ACCESS_CONTROL, 1, &memAcc);
+}
+
+void ili9341_set_rotation(uint8_t r) {
   //  static const uint8_t rotation_const[]={DISPLAY_ROTATION_0, DISPLAY_ROTATION_90,
   //  DISPLAY_ROTATION_180, DISPLAY_ROTATION_270};
   ili9341_send_command(ILI9341_MEMORY_ACCESS_CONTROL, 1, &r);
 }
 
-void lcd_blitBitmap(uint16_t x, uint16_t y, uint16_t width, uint16_t height, const uint8_t *b)
-{
+void lcd_blitBitmap(uint16_t x, uint16_t y, uint16_t width, uint16_t height, const uint8_t *b) {
+#if 1 // Use this for remote desctop (in this case bulk operation send to remote)
   pixel_t *buf = spi_buffer;
   uint8_t bits = 0;
   for (uint32_t c = 0; c < height; c++) {
@@ -744,10 +729,21 @@ void lcd_blitBitmap(uint16_t x, uint16_t y, uint16_t width, uint16_t height, con
     }
   }
   lcd_bulk(x, y, width, height);
+#else
+  uint8_t bits = 0;
+  ili9341_setWindow(x, y, width, height, ILI9341_MEMORY_WRITE);
+  for (uint32_t c = 0; c < height; c++) {
+    for (uint32_t r = 0; r < width; r++) {
+      if ((r&7) == 0) bits = *b++;
+      while (SPI_TX_IS_NOT_EMPTY(LCD_SPI));
+      SPI_WRITE_16BIT(LCD_SPI, (0x80 & bits) ? foreground_color : background_color);
+      bits <<= 1;
+    }
+  }
+#endif
 }
 
-void lcd_drawchar(uint8_t ch, int x, int y)
-{
+void lcd_drawchar(uint8_t ch, int x, int y) {
   lcd_blitBitmap(x, y, FONT_GET_WIDTH(ch), FONT_GET_HEIGHT, FONT_GET_DATA(ch));
 }
 
@@ -836,18 +832,48 @@ int lcd_printf(int16_t x, int16_t y, const char *fmt, ...) {
   return retval;
 }
 
-void lcd_drawstringV(const char *str, int x, int y)
-{
+int lcd_printfV(int16_t x, int16_t y, const char *fmt, ...) {
+  // Init small lcd print stream
+  struct lcd_printStreamVMT {
+    _base_sequential_stream_methods
+  } lcd_vmt = {NULL, NULL, lcd_put, NULL};
+  lcdPrintStream ps = {&lcd_vmt, x, y, x, y, 0};
+  lcd_set_foreground(LCD_FG_COLOR);
+  lcd_set_background(LCD_BG_COLOR);
   ili9341_set_rotation(DISPLAY_ROTATION_270);
-  lcd_drawstring(LCD_HEIGHT-y, x, str);
+  // Performing the print operation using the common code.
+  va_list ap;
+  va_start(ap, fmt);
+  int retval = chvprintf((BaseSequentialStream *)(void *)&ps, fmt, ap);
+  va_end(ap);
   ili9341_set_rotation(DISPLAY_ROTATION_0);
+  // Return number of bytes that would have been written.
+  return retval;
 }
 
-int lcd_drawchar_size(uint8_t ch, int x, int y, uint8_t size)
-{
-  pixel_t *buf = spi_buffer;
+void lcd_blitBitmapScale(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t size, const uint8_t *b) {
+  ili9341_setWindow(x, y, w * size, h * size, ILI9341_MEMORY_WRITE);
+  for (int c = 0; c < h; c++) {
+    const uint8_t *ptr = b; uint8_t bits = 0;
+    for (int i = 0; i < size; i++) {
+      ptr = b;
+      for (int r = 0; r < w; r++, bits <<= 1) {
+        if ((r&7) == 0) bits = *ptr++;
+        for (int j = 0; j < size; j++) {
+          while (SPI_TX_IS_NOT_EMPTY(LCD_SPI));
+          SPI_WRITE_16BIT(LCD_SPI, (0x80 & bits) ? foreground_color : background_color);
+        }
+      }
+    }
+    b = ptr;
+  }
+}
+
+int lcd_drawchar_size(uint8_t ch, int x, int y, uint8_t size) {
   const uint8_t *char_buf = FONT_GET_DATA(ch);
   uint16_t w = FONT_GET_WIDTH(ch);
+#if 1
+  pixel_t *buf = spi_buffer;
   for (uint32_t c = 0; c < FONT_GET_HEIGHT; c++, char_buf++) {
     for (uint32_t i = 0; i < size; i++) {
       uint8_t bits = *char_buf;
@@ -857,78 +883,40 @@ int lcd_drawchar_size(uint8_t ch, int x, int y, uint8_t size)
     }
   }
   lcd_bulk(x, y, w * size, FONT_GET_HEIGHT * size);
-  return w*size;
+#else
+  ili9341_setWindow(x, y, w * size, FONT_GET_HEIGHT * size, ILI9341_MEMORY_WRITE);
+  for (int c = 0; c < FONT_GET_HEIGHT; c++, char_buf++) {
+    for (int i = 0; i < size; i++) {
+      uint8_t bits = *char_buf;
+      for (int r = 0; r < w; r++, bits <<= 1)
+        for (int j = 0; j < size; j++) {
+          while (SPI_TX_IS_NOT_EMPTY(LCD_SPI));
+          SPI_WRITE_16BIT(LCD_SPI, (0x80 & bits) ? foreground_color : background_color);
+        }
+    }
+  }
+#endif
+  return w * size;
 }
 
-void lcd_drawfont(uint8_t ch, int x, int y)
-{
+void lcd_drawfont(uint8_t ch, int x, int y) {
   lcd_blitBitmap(x, y, NUM_FONT_GET_WIDTH, NUM_FONT_GET_HEIGHT, NUM_FONT_GET_DATA(ch));
 }
 
-void lcd_drawstring_size(const char *str, int x, int y, uint8_t size)
-{
+void lcd_drawstring_size(const char *str, int x, int y, uint8_t size) {
   while (*str)
     x += lcd_drawchar_size(*str++, x, y, size);
 }
-#if 0
-static void lcd_pixel(int x, int y, uint16_t color)
-{
-  uint32_t xx = __REV16(x|((x)<<16));
-  uint32_t yy = __REV16(y|((y)<<16));
-  ili9341_send_command(ILI9341_COLUMN_ADDRESS_SET, 4, (uint8_t*)&xx);
-  ili9341_send_command(ILI9341_PAGE_ADDRESS_SET, 4, (uint8_t*)&yy);
-  ili9341_send_command(ILI9341_MEMORY_WRITE, 2, &color);
-}
-#endif
 
-void lcd_line(int x0, int y0, int x1, int y1)
-{
-#if 0
-  // modifed Bresenham's line algorithm, see https://en.wikipedia.org/wiki/Bresenham%27s_line_algorithm
-  int dx = x1 - x0, sx = 1; if (dx < 0) {dx = -dx; sx = -1;}
-  int dy = y1 - y0, sy = 1; if (dy < 0) {dy = -dy; sy = -1;}
-  int err = (dx > dy ? dx : -dy) / 2;
-  while (1) {
-    ili9341_pixel(x0, y0, RGB565(255,255,255));
-    if (x0 == x1 && y0 == y1)
-      break;
-    int e2 = err;
-    if (e2 > -dx) { err -= dy; x0 += sx; }
-    if (e2 <  dy) { err += dx; y0 += sy; }
+void lcd_vector_draw(int x, int y, const vector_data *v) {
+  while (v->shift_x || v->shift_y) {
+    int x1 = x + (int)v->shift_x;
+    int y1 = y + (int)v->shift_y;
+    if (!v->transparent)
+      lcd_line(x, y, x1, y1);
+    x = x1; y = y1;
+    v++;
   }
-#endif
-  SWAP(uint16_t, foreground_color, background_color);
-  if (x0 > x1) {
-    SWAP(int, x0, x1);
-    SWAP(int, y0, y1);
-  }
-
-  while (x0 <= x1) {
-    int dx = x1 - x0 + 1;
-    int dy = y1 - y0;
-    if (dy >= 0) {
-      dy++;
-      if (dy > dx) {
-        dy /= dx; dx = 1;
-      } else {
-        dx /= dy; dy = 1;
-      }
-    } else {
-      dy--;
-      if (-dy > dx) {
-        dy /= dx; dx = 1;
-      } else {
-        dx /= -dy;dy = -1;
-      }
-    }
-    if (dy > 0)
-      lcd_fill(x0, y0, dx, dy);
-    else
-      lcd_fill(x0, y0+dy, dx, -dy);
-    x0 += dx;
-    y0 += dy;
-  }
-  SWAP(uint16_t, foreground_color, background_color);
 }
 
 #if 0
@@ -937,8 +925,7 @@ static const uint16_t colormap[] = {
   RGBHEX(0x00ffff), RGBHEX(0xff00ff), RGBHEX(0xffff00)
 };
 
-void ili9341_test(int mode)
-{
+void ili9341_test(int mode) {
   int x, y;
   int i;
   switch (mode) {
@@ -1005,14 +992,16 @@ void ili9341_test(int mode)
 #define CMD58    (0x40+58)    // READ_OCR
 #define CMD59    (0x40+59)    // CRC_ON_OFF
 // Then send after CMD55 (APP_CMD) interpret as ACMD
-#define ACMD41   (0x40+41)    // SEND_OP_COND (ACMD)
+#define ACMD41   (0xC0+41)    // SEND_OP_COND (ACMD)
 
-// MMC card type flags (MMC_GET_TYPE)
-#define CT_MMC      0x01      // MMC v3
-#define CT_SD1      0x02      // SDv1
-#define CT_SD2      0x04      // SDv2
-#define CT_SDC      0x06      // SD
-#define CT_BLOCK    0x08      // Block addressing
+// MMC card type and status flags
+#define CT_MMC       0x01      // MMC v3
+#define CT_SD1       0x02      // SDv1
+#define CT_SD2       0x04      // SDv2
+#define CT_SDC       0x06      // SD
+#define CT_BLOCK     0x08      // Block addressing
+#define CT_WRPROTECT 0x40      // Write protect flag
+#define CT_POWER_ON  0x80      // Power ON flag
 
 // 7.3.2 Responses
 // 7.3.2.1 Format R1 (1 byte)
@@ -1087,8 +1076,6 @@ void ili9341_test(int mode)
 #define CSD_14_TMP_WRITE_PROTECT                 0b00010000
 #define CSD_14_FILE_FORMAT                       0b00001100
 #define CSD_15_CRC                               0b11111110
-
-
 // 7.3.3.1 Data Response Token
 #define SD_TOKEN_DATA_ACCEPTED                     ((uint8_t)0x05) // Data accepted
 #define SD_TOKEN_WRITE_CRC_ERROR                   ((uint8_t)0x0b) // Data rejected due to a CRC error
@@ -1106,9 +1093,6 @@ void ili9341_test(int mode)
 //*****************************************************
 //             SD card module settings
 //*****************************************************
-// Additional state flag definition
-#define STA_POWER_ON       0x80   // Power ON flag
-
 // Use for enable CRC check of Tx and Rx data on SPI
 // If enable both CRC check, on initialization send SD command - CRC_ON_OFF vs ON
 // And Card begin check received data and answer on CRC errors
@@ -1129,6 +1113,8 @@ void ili9341_test(int mode)
 #define SD_SECTOR_SIZE      512
 // SD card spi bus
 #define SD_SPI              SPI1
+#define SD_DMA_RX           DMA1_Channel2    // DMA1 channel 2 use for SPI1 rx
+#define SD_DMA_TX           DMA1_Channel3    // DMA1 channel 3 use for SPI1 tx
 // Define SD SPI speed on work
 #define SD_SPI_SPEED        SPI_BR_DIV2
 // div4 give less error and high speed for Rx
@@ -1136,11 +1122,9 @@ void ili9341_test(int mode)
 
 // Define SD SPI speed on initialization (100-400kHz need)
 #define SD_INIT_SPI_SPEED   SPI_BR_DIV256
-// Set number of try read or write sector data (1 only one try)
-#define SD_READ_WRITE_REPEAT 1
+
 // Local values for SD card state
-static DSTATUS Stat = STA_NOINIT;  // Disk Status
-static uint8_t CardType  = 0;      // Type 0:MMC, 1:SDC, 2:Block addressing
+static uint8_t CardStatus  = 0;      // Status: power on, write protect and Type 0:MMC, 1:SDC, 2:Block addressing
 
 // Debug functions, 0 to disable
 #define DEBUG    0
@@ -1154,8 +1138,8 @@ uint32_t r_time;
 uint32_t total_time;
 uint32_t crc_time;
 void testLog(void){
-  DEBUG_PRINT(" Read  speed = %d Byte/s (count %d, time %d)\r\n", r_cnt*512*10000/r_time, r_cnt, r_time);
-  DEBUG_PRINT(" Write speed = %d Byte/s (count %d, time %d)\r\n", w_cnt*512*10000/w_time, w_cnt, w_time);
+  DEBUG_PRINT(" Read  speed = %d Byte/s (count %d, time %d)\r\n", r_cnt*512*100000/r_time, r_cnt, r_time);
+  DEBUG_PRINT(" Write speed = %d Byte/s (count %d, time %d)\r\n", w_cnt*512*100000/w_time, w_cnt, w_time);
   DEBUG_PRINT(" Total time = %d\r\n", chVTGetSystemTimeX() - total_time);
   DEBUG_PRINT(" CRC16 time %d\r\n", crc_time);
 }
@@ -1168,12 +1152,14 @@ void testLog(void){
 #define SD_CS_HIGH    palSetPad(GPIOB, GPIOB_SD_CS)
 
 static void SD_Select_SPI(uint32_t speed) {
+  while (SPI_IS_BUSY(LCD_SPI));
   LCD_CS_HIGH;               // Unselect LCD
   SPI_BR_SET(SD_SPI, speed); // Set Baud rate control for SD card
   SD_CS_LOW;                 // Select SD Card
 }
 
 static void SD_Unselect_SPI(void) {
+  while (SPI_IS_BUSY(SD_SPI));
   SD_CS_HIGH;                         // Unselect SD Card
   spi_RxByte();                       // Dummy read/write one Byte recommend for SD after CS up
   SPI_BR_SET(LCD_SPI, LCD_SPI_SPEED); // Restore Baud rate for LCD
@@ -1241,7 +1227,7 @@ static uint16_t crc16(const uint8_t *ptr, uint16_t count) {
 #endif
 
 // Wait and read R1 answer from SD
-static inline uint8_t SD_ReadR1(uint32_t cnt) {
+static uint8_t SD_ReadR1(uint32_t cnt) {
   uint8_t r1;
    // 8th bit R1 always zero, check it
   spi_DropRx();
@@ -1251,26 +1237,19 @@ static inline uint8_t SD_ReadR1(uint32_t cnt) {
 }
 
 // Wait SD ready token answer (wait time in systick)
-static inline bool SD_WaitDataToken(uint8_t token, uint32_t wait_time) {
+static bool SD_WaitDataToken(uint8_t token, uint32_t wait_time) {
   uint8_t res;
   uint32_t time = chVTGetSystemTimeX();
-  uint8_t count = 0;
   spi_DropRx();
-  do{
-    if ((res = spi_RxByte()) == token)
-      return true;
-    count++;
-    // Check timeout only every 256 bytes read (~8ms)
-    if (count == 0 && (chVTGetSystemTimeX() - time) > wait_time)
-      break;
-  }while (res == 0xFF);
-  return false;
+  while((res = spi_RxByte()) != token && chVTGetSystemTimeX() - time < wait_time)
+    ;
+  return res == token;
 }
 
-static inline uint8_t SD_WaitDataAccept(uint32_t cnt) {
+static uint8_t SD_WaitDataAccept(uint32_t cnt) {
   uint8_t res;
   spi_DropRx();
-  while ((res = spi_RxByte()) == 0xFF && --cnt)
+  while((res = spi_RxByte()) == 0xFF && --cnt)
     ;
   return res&0x1F;
 }
@@ -1279,16 +1258,11 @@ static inline uint8_t SD_WaitDataAccept(uint32_t cnt) {
 static uint8_t SD_WaitNotBusy(uint32_t wait_time) {
   uint8_t res;
   uint32_t time = chVTGetSystemTimeX();
-  uint8_t count = 0;
   spi_DropRx();
-  do{
+  do {
     if ((res = spi_RxByte()) == 0xFF)
       return res;
-    count++;
-    // Check timeout only every 256 bytes read (~8ms)
-    if (count == 0 && (chVTGetSystemTimeX() - time) > wait_time)
-      break;
-  }while (1);
+  } while(chVTGetSystemTimeX() - time < wait_time);
   return 0;
 }
 
@@ -1299,7 +1273,7 @@ static bool SD_RxDataBlock(uint8_t *buff, uint16_t len, uint8_t token) {
     DEBUG_PRINT(" rx SD_WaitDataToken err\r\n");
     return FALSE;
   }
-  // Receive data (Not use rx DMA)
+  // Receive data
 #ifdef __USE_SDCARD_DMA_RX__
   spi_DMARxBuffer(buff, len, true);
 #else
@@ -1309,8 +1283,8 @@ static bool SD_RxDataBlock(uint8_t *buff, uint16_t len, uint8_t token) {
   uint16_t crc; spi_RxBuffer((uint8_t*)&crc, 2);
 #ifdef SD_USE_DATA_CRC
   uint16_t bcrc = crc16(buff, len);
-  if (crc!=bcrc){
-    DEBUG_PRINT("CRC = %04x , hcalc = %04x, calc = %04x\r\n", (uint32_t)crc, (uint32_t)bcrc, (uint32_t)crc16(buff, len));
+  if (crc != bcrc){
+    DEBUG_PRINT("CRC = %04x , calc = %04x\r\n", (uint32_t)crc, (uint32_t)bcrc);
     return FALSE;
   }
 #endif
@@ -1318,59 +1292,54 @@ static bool SD_RxDataBlock(uint8_t *buff, uint16_t len, uint8_t token) {
 }
 
 // Transmit data block to SD
-static bool SD_TxDataBlock(const uint8_t *buff, uint8_t token) {
-  uint8_t resp;
+static bool SD_TxDataBlock(const uint8_t *buff, uint16_t len, uint8_t token) {
+  uint8_t r1;
   // Transmit token
   spi_TxByte(token);
-#if 0         // Not use multiple block tx
-  // if it's not STOP token, transmit data, in multiple block Tx
-   if (token == SD_TOKEN_STOP_BLOCK) return TRUE;
-#endif
-
 #ifdef __USE_SDCARD_DMA__
-  spi_DMATxBuffer((uint8_t*)buff, SD_SECTOR_SIZE);
+  spi_DMATxBuffer(buff, len, false);
 #else
-  spi_TxBuffer((uint8_t*)buff, SD_SECTOR_SIZE);
+  spi_TxBuffer((uint8_t*)buff, len);
 #endif
-  // Send CRC
+  // Calculate and Send CRC
 #ifdef  SD_USE_DATA_CRC
-  uint16_t bcrc = crc16(buff, SD_SECTOR_SIZE);
-  spi_TxWord(bcrc);
+  uint16_t bcrc = crc16(buff, len);
 #else
-  spi_TxWord(0xFFFF);
+  uint16_t bcrc = 0xFFFF;
 #endif
-  // Receive transmit data response token on next 100 bytes
-  resp = SD_WaitDataAccept(100);
-  if (resp != SD_TOKEN_DATA_ACCEPTED){
-    goto error_tx;
+#ifdef __USE_SDCARD_DMA__
+  dmaChannelWaitCompletion(SD_DMA_TX);
+#endif
+  spi_TxByte((bcrc>>0) & 0xFF); // Send CRC
+  spi_TxByte((bcrc>>8) & 0xFF);
+  // Receive transmit data response token on next 8 bytes
+  if ((r1 = SD_WaitDataAccept(100)) != SD_TOKEN_DATA_ACCEPTED) {
+    DEBUG_PRINT(" Tx accept error = %04x\n", (uint32_t)r1);
+    return FALSE;
   }
-#if 0
-  // Wait busy (recommended timeout is 250ms (500ms for SDXC) set 250ms
-  resp = SD_WaitNotBusy(MS2ST(250));
-  if (resp == 0xFF)
-    return TRUE;
-#else
+#if 0  // Wait busy in block transfer (recommended timeout is 250ms (500ms for SDXC) set 250ms
+  if (token == SD_TOKEN_START_M_BLOCK && (r1 = SD_WaitNotBusy(MS2ST(250))) != 0xFF) {
+    DEBUG_PRINT(" Tx busy error = %04\n", (uint32_t)r1);
+    return FALSE;
+  }
+#endif
   // Continue execute, wait not busy on next command
   return TRUE;
-#endif
-  DEBUG_PRINT(" Tx busy error = %04\r\n", (uint32_t)resp);
-  return FALSE;
-error_tx:
-  DEBUG_PRINT(" Tx accept error = %04x\r\n", (uint32_t)resp);
-  return FALSE;
 }
 
 // Transmit command to SD
 static uint8_t SD_SendCmd(uint8_t cmd, uint32_t arg) {
   uint8_t buf[6];
   uint8_t r1;
+  // Advanced command (ACMD__), need send CMD55 before
+  if ((cmd & 0x80) && (r1 = SD_SendCmd(CMD55, 0)) > 1) return r1;
   // wait SD ready after last Tx (recommended timeout is 250ms (500ms for SDXC) set 250ms
   if ((r1 = SD_WaitNotBusy(MS2ST(500))) != 0xFF) {
     DEBUG_PRINT(" SD_WaitNotBusy CMD%d err, %02x\r\n", cmd-0x40, (uint32_t)r1);
     return 0xFF;
   }
   // Transmit command
-  buf[0] = cmd;
+  buf[0] = cmd & 0x7F;
   buf[1] = (arg >> 24)&0xFF;
   buf[2] = (arg >> 16)&0xFF;
   buf[3] = (arg >>  8)&0xFF;
@@ -1385,42 +1354,16 @@ static uint8_t SD_SendCmd(uint8_t cmd, uint32_t arg) {
 #endif
   spi_TxBuffer(buf, 6);
 // Skip a stuff byte when STOP_TRANSMISSION
-//if (cmd == CMD12) SPI_RxByte();
-  // Receive response register r1
+  if (cmd == CMD12) spi_RxByte();
+  // Receive response register r1 (need max 8 cycles, in tests answer on next read)
   r1 = SD_ReadR1(100);
-#if 1
   if (r1&(SD_R1_NOT_R1|SD_R1_CRC_ERROR|SD_R1_ERASE_RESET|SD_R1_ERR_ERASE_CLR)){
     DEBUG_PRINT(" SD_SendCmd err CMD%d, 0x%x, 0x%08x\r\n", (uint32_t)cmd-0x40, (uint32_t)r1, arg);
     return r1;
   }
   if (r1&(~SD_R1_IDLE))
     DEBUG_PRINT(" SD_SendCmd CMD%d, 0x%x, 0x%08x\r\n", (uint32_t)cmd-0x40, (uint32_t)r1, arg);
-#endif
   return r1;
-}
-
-// Power on SD
-static void SD_PowerOn(void) {
-  uint16_t n;
-  LCD_CS_HIGH;
-  // Dummy TxRx 80 bits for power up SD
-  for (n=0;n<10;n++)
-    spi_RxByte();
-  SD_Select_SPI(SD_INIT_SPI_SPEED);
-  // Set SD card to idle state
-  if (SD_SendCmd(CMD0, 0) == SD_R1_IDLE)
-    Stat|= STA_POWER_ON;
-  SD_Unselect_SPI();
-}
-
-// Power off SD
-static inline void SD_PowerOff(void) {
-  Stat &= ~STA_POWER_ON;
-}
-
-// Check power flag
-static inline uint8_t SD_CheckPower(void) {
-  return Stat & STA_POWER_ON;
 }
 
 //*******************************************************
@@ -1444,51 +1387,42 @@ DSTATUS disk_initialize(BYTE pdrv) {
   crc_time = 0;
   total_time = chVTGetSystemTimeX();
 #endif
-  if (pdrv != 0) return STA_NOINIT;
+  if (pdrv != 0) return disk_status(pdrv);
   // Start init SD card
-  Stat = STA_NOINIT;
-  // power on, try detect on bus, set card to idle state
-  SD_PowerOn();
-  if (!SD_CheckPower()) return Stat;
+  CardStatus = 0;
+  LCD_CS_HIGH;
+  // Power on, try detect on bus, set card to idle state:
+  //   Dummy TxRx 80 bits for power up SD
+  for(int n = 0; n < 10; n++)
+    spi_RxByte();
   // check disk type
   uint8_t  type = 0;
   uint32_t cnt = 100;
   // Set low SPI bus speed = PLL/256 (on 72MHz =281.250kHz)
   SD_Select_SPI(SD_INIT_SPI_SPEED);
   // send GO_IDLE_STATE command
-  if (SD_SendCmd(CMD0, 0) == SD_R1_IDLE)
-  {
+  if (SD_SendCmd(CMD0, 0) == SD_R1_IDLE) {
     DEBUG_PRINT(" CMD0 Ok\r\n");
     // SDC V2+ accept CMD8 command, http://elm-chan.org/docs/mmc/mmc_e.html
-    if (SD_SendCmd(CMD8, 0x00001AAU) == SD_R1_IDLE)
-    {
-      DEBUG_PRINT(" CMD8 Ok\r\n");
+    if (SD_SendCmd(CMD8, 0x00001AAU) == SD_R1_IDLE) {
       uint32_t ocr; spi_RxBuffer((uint8_t *)&ocr, 4);
       DEBUG_PRINT(" CMD8 0x%x\r\n", ocr);
       // operation condition register voltage range 2.7-3.6V
-      if (ocr == _OCR(0x00001AAU))
-      {
+      if (ocr == _OCR(0x00001AAU)) {
         // ACMD41 with HCS bit can be up to 200ms wait
-        do {
-          if (SD_SendCmd(CMD55,                0) <= 1 && // APP_CMD Get Ok or idle state
-              SD_SendCmd(ACMD41, SD_OCR_CAPACITY) == 0)   // Check OCR
-            break;
+        while (SD_SendCmd(ACMD41, SD_OCR_CAPACITY) != 0 && --cnt)   // Check OCR
           chThdSleepMilliseconds(10);
-        } while (--cnt);
-        DEBUG_PRINT(" CMD55 + ACMD41 %d\r\n", cnt);
+        DEBUG_PRINT(" ACMD41 %d\r\n", cnt);
         // READ_OCR
-        if (cnt && SD_SendCmd(CMD58, 0) == 0)
-        {
+        if (cnt && SD_SendCmd(CMD58, 0) == 0) {
           DWORD ocr; spi_RxBuffer((uint8_t *)&ocr, 4);
           DEBUG_PRINT(" CMD58 OCR = 0x%08x\r\n", _OCR(ocr));
           // Check CCS bit, SDv2 (HC or SC)
           type = (ocr & _OCR(SD_OCR_CAPACITY)) ? CT_SD2 | CT_BLOCK : CT_SD2;
         }
       }
-#ifdef SD_USE_COMMAND_CRC
-#ifdef SD_USE_DATA_CRC
+#if defined(SD_USE_COMMAND_CRC) && defined(SD_USE_DATA_CRC)
       SD_SendCmd(CMD59, 1); // Enable CRC check on card
-#endif
 #endif
 //      uint8_t csd[16];
 //      if (SD_SendCmd(CMD9, 0) == 0 && SD_RxDataBlock(csd, 16, SD_TOKEN_START_BLOCK)){
@@ -1497,72 +1431,56 @@ DSTATUS disk_initialize(BYTE pdrv) {
 //          DEBUG_PRINT(" %02x", csd[i]);
 //        DEBUG_PRINT("\r\n");
 //      }
-    } else {
-      DEBUG_PRINT(" CMD8 Fail\r\n");
-      // SDC V1 or MMC
-      type = (SD_SendCmd(CMD55,  0) <= 1 &&                  // APP_CMD
-              SD_SendCmd(ACMD41, 0) <= 1) ? CT_SD1 : CT_MMC;
-      DEBUG_PRINT(" CMD55 %d\r\n", type);
-      do{
-        if (type == CT_SD1)
-        {
-          if (SD_SendCmd(CMD55, 0) <= 1 && SD_SendCmd(ACMD41, 0) == 0) break; // ACMD41
-        }
-        else if (SD_SendCmd(CMD1, 0) == 0) break; // CMD1
+    } else { // SDC V1 or MMC
+      uint8_t cmd = (SD_SendCmd(ACMD41, 0) <= 1) ? ACMD41 : CMD1; // cmd for idle state
+      DEBUG_PRINT(" CMD8 Fail, cmd = 0x%02x\r\n", cmd);
+      while(SD_SendCmd(cmd, 0) && --cnt)                          // Wait idle state (depend from card type)
         chThdSleepMilliseconds(10);
-      } while (--cnt);
-      // SET_BLOCKLEN
-      if (!cnt || SD_SendCmd(CMD16, SD_SECTOR_SIZE) != 0) type = 0;
+      if (cnt && SD_SendCmd(CMD16, SD_SECTOR_SIZE) == 0)          // SET_BLOCKLEN and set type
+        type = cmd == ACMD41 ? CT_SD1 : CT_MMC;
       DEBUG_PRINT(" CMD16 %d %d\r\n", cnt, type);
     }
   }
   SD_Unselect_SPI();
-  CardType = type;
   DEBUG_PRINT("CardType %d\r\n", type);
-  // Clear STA_NOINIT
   if (type)
-    Stat&=~STA_NOINIT;
-  else // Initialization failed
-    SD_PowerOff();
-  return Stat;
+    CardStatus = CT_POWER_ON | type;
+  return disk_status(pdrv);
 }
 
 // diskio.c - Return disk status
 DSTATUS disk_status(BYTE pdrv) {
   if (pdrv != 0) return STA_NOINIT;
-  return Stat;
+  return CardStatus == 0 ? STA_NOINIT : 0;
 }
 
 // diskio.c - Read sector
 DRESULT disk_read(BYTE pdrv, BYTE* buff, DWORD sector, UINT count) {
   // No disk or wrong block count
-  if (pdrv != 0 || count != 1 || (Stat & STA_NOINIT)) return RES_NOTRDY;
-  // convert to byte address
-  if (!(CardType & CT_BLOCK)) sector *= SD_SECTOR_SIZE;
-
+  if (pdrv != 0 || !(CardStatus & CT_POWER_ON)) return RES_NOTRDY;
 #if DEBUG == 1
-  r_cnt++;
+  r_cnt+= count;
   r_time-= chVTGetSystemTimeX();
 #endif
-
   SD_Select_SPI(SD_SPI_RX_SPEED);
-  // READ_SINGLE_BLOCK
-  uint8_t cnt = SD_READ_WRITE_REPEAT; // read repeat count
-  do{
-    if ((SD_SendCmd(CMD17, sector) == 0) && SD_RxDataBlock(buff, SD_SECTOR_SIZE, SD_TOKEN_START_BLOCK)){
-      count = 0;
-      break;
-    }
-  }while (--cnt);
+  // convert to byte address if no block mode
+  if (!(CardStatus & CT_BLOCK)) sector*= SD_SECTOR_SIZE;
+  if (count == 1) {                               // Read single block
+    if (SD_SendCmd(CMD17, sector) == 0 && SD_RxDataBlock(buff, SD_SECTOR_SIZE, SD_TOKEN_START_BLOCK))
+      count--;
+  } else if (SD_SendCmd(CMD18, sector) == 0) {    // Read multiple blocks
+    while(SD_RxDataBlock(buff, SD_SECTOR_SIZE, SD_TOKEN_START_BLOCK) && --count)
+      buff+= SD_SECTOR_SIZE;
+    SD_SendCmd(CMD12, 0);                         // Finish multiple block read
+  }
   SD_Unselect_SPI();
-
 #if DEBUG == 1
   r_time+= chVTGetSystemTimeX();
   if (count)
     DEBUG_PRINT(" err READ_BLOCK %d 0x%08x\r\n", count, sector);
 #if 0
   else{
-    DEBUG_PRINT("Sector read 0x%08x %d \r\n", sector, cnt);
+    DEBUG_PRINT("Sector read 0x%08x %d \r\n", sector, count);
     for (UINT j = 0; j < 32; j++){
       for (UINT i = 0; i < 16; i++)
         DEBUG_PRINT(" 0x%02x", buff[j*16 + i]);
@@ -1571,20 +1489,16 @@ DRESULT disk_read(BYTE pdrv, BYTE* buff, DWORD sector, UINT count) {
   }
 #endif
 #endif
-
   return count ? RES_ERROR : RES_OK;
 }
 
 // diskio.c - Write sector
 DRESULT disk_write(BYTE pdrv, const BYTE* buff, DWORD sector, UINT count) {
-  // No disk or wrong count
-  if (pdrv != 0 || count != 1 || (Stat & STA_NOINIT)) return RES_NOTRDY;
+  // No disk or wrong block count
+  if (pdrv != 0 || !(CardStatus & CT_POWER_ON)) return RES_NOTRDY;
   // Write protection
-  if (Stat & STA_PROTECT) return RES_WRPRT;
-  // Convert to byte address if no Block mode
-  if (!(CardType & CT_BLOCK)) sector*= SD_SECTOR_SIZE;
-
-  #if DEBUG == 1
+  if (CardStatus & CT_WRPROTECT) return RES_WRPRT;
+#if DEBUG == 1
 #if 0
     DEBUG_PRINT("Sector write 0x%08x, %d\r\n", sector, count);
     for (UINT j = 0; j < 32; j++){
@@ -1593,21 +1507,29 @@ DRESULT disk_write(BYTE pdrv, const BYTE* buff, DWORD sector, UINT count) {
       DEBUG_PRINT("\r\n");
     }
 #endif
-  w_cnt++;
+  w_cnt+=count;
   w_time-= chVTGetSystemTimeX();
 #endif
-
   SD_Select_SPI(SD_SPI_SPEED);
-  // WRITE_SINGLE_BLOCK
-  uint8_t cnt = SD_READ_WRITE_REPEAT; // write repeat count
-  do{
-    if ((SD_SendCmd(CMD24, sector) == 0) && SD_TxDataBlock(buff, SD_TOKEN_START_BLOCK)){
-      count = 0;
-      break;
-    }
-  } while (--cnt);
+#if 1                                                 // Write multiple block mode
+  // convert to byte address if no block mode
+  if (!(CardStatus & CT_BLOCK)) sector*= SD_SECTOR_SIZE;
+  if (count == 1) {                                   // Write single block
+    if (SD_SendCmd(CMD24, sector) == 0 && SD_TxDataBlock(buff, SD_SECTOR_SIZE, SD_TOKEN_START_BLOCK))
+      count--;
+  } else if (SD_SendCmd(CMD25, sector) == 0) {        // Write multiple blocks, wait busy
+    while (SD_TxDataBlock(buff, SD_SECTOR_SIZE, SD_TOKEN_START_M_BLOCK) && SD_WaitNotBusy(MS2ST(250)) == 0xFF && --count)
+      buff+= SD_SECTOR_SIZE;
+    spi_TxByte(SD_TOKEN_STOP_M_BLOCK);                // Finish multiple block write
+  }
+#else
+  while(SD_SendCmd(CMD24, (CardStatus & CT_BLOCK) ? sector : sector * SD_SECTOR_SIZE) == 0 && // Write block command
+        SD_TxDataBlock(buff, SD_SECTOR_SIZE, SD_TOKEN_START_BLOCK) && --count) {              // Write data, dec count
+    sector++;
+    buff+= SD_SECTOR_SIZE;
+  }
+#endif
   SD_Unselect_SPI();
-
 #if DEBUG == 1
   w_time+= chVTGetSystemTimeX();
   if (count)
@@ -1623,7 +1545,7 @@ DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void* buff) {
   (void)buff;
   DRESULT res = RES_PARERR;
   // No disk or not ready
-  if (pdrv != 0 || Stat & STA_NOINIT) return RES_NOTRDY;
+  if (pdrv != 0 || !(CardStatus & CT_POWER_ON)) return RES_NOTRDY;
   SD_Select_SPI(SD_SPI_RX_SPEED);
   switch (cmd){
     // Makes sure that the device has finished pending write process.
@@ -1676,8 +1598,8 @@ DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void* buff) {
           n = 10;
         }
         else {                      // MMC or SDC V1
-          csize = ((uint32_t)csd[8]>>6)|((uint32_t)csd[7]<<2)|((uint32_t)(csd[6]&0x03)<<10);
-          n = ((csd[5]&0x0F)|((csd[10]&0x80)>>7)|((csd[9]&0x03)<<1)) + 2 - 9;
+          csize = ((uint32_t)csd[8]>>6)+((uint32_t)csd[7]<<2)+((uint32_t)(csd[6]&0x03)<<10);
+          n = (csd[5]&0x0F)+((csd[10]&0x80)>>7)+((csd[9]&0x03)<<1) + 2 - 9;
         }
         *(uint32_t*)buff = (csize+1)<<n;
         res = RES_OK;
